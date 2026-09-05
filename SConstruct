@@ -58,14 +58,18 @@ if env['version'] == '':
 # Enable Obj-C modules
 env.Append(CCFLAGS=["-fmodules", "-fcxx-modules"])
 
+# The 'gamecenter' plugin (Crystal Tempest fork) uses GKLeaderboard.loadEntries
+# and submitScore(...leaderboardIDs:), both iOS 14+. Other plugins keep 12.0.
+min_ios_version = '14.0' if env['plugin'] == 'gamecenter' else '12.0'
+
 if env['simulator']:
     sdk_name = 'iphonesimulator'
-    env.Append(CCFLAGS=['-mios-simulator-version-min=12.0'])
-    env.Append(LINKFLAGS=["-mios-simulator-version-min=12.0"])
+    env.Append(CCFLAGS=['-mios-simulator-version-min=' + min_ios_version])
+    env.Append(LINKFLAGS=["-mios-simulator-version-min=" + min_ios_version])
 else:
     sdk_name = 'iphoneos'
-    env.Append(CCFLAGS=['-miphoneos-version-min=12.0'])
-    env.Append(LINKFLAGS=["-miphoneos-version-min=12.0"])
+    env.Append(CCFLAGS=['-miphoneos-version-min=' + min_ios_version])
+    env.Append(LINKFLAGS=["-miphoneos-version-min=" + min_ios_version])
 
 try:
     sdk_path = decode_utf8(subprocess.check_output(['xcrun', '--sdk', sdk_name, '--show-sdk-path']).strip())
@@ -73,14 +77,21 @@ except (subprocess.CalledProcessError, OSError):
     raise ValueError("Failed to find SDK path while running xcrun --sdk {} --show-sdk-path.".format(sdk_name))
 
 env.Append(CCFLAGS=[
-    '-fobjc-arc', 
-    '-fmessage-length=0', '-fno-strict-aliasing', '-fdiagnostics-print-source-range-info', 
-    '-fdiagnostics-show-category=id', '-fdiagnostics-parseable-fixits', '-fpascal-strings', 
-    '-fblocks', '-fvisibility=hidden', '-MMD', '-MT', 'dependencies', '-fno-exceptions', 
-    '-Wno-ambiguous-macro', 
+    '-fobjc-arc',
+    '-fmessage-length=0', '-fno-strict-aliasing', '-fdiagnostics-print-source-range-info',
+    '-fdiagnostics-show-category=id', '-fdiagnostics-parseable-fixits', '-fpascal-strings',
+    '-fblocks', '-fvisibility=hidden', '-MMD', '-MT', 'dependencies', '-fno-exceptions',
+    '-Wno-ambiguous-macro',
     '-Wall', '-Werror=return-type',
     # '-Wextra',
 ])
+
+# The gamecenter plugin targets iOS 14 (see min_ios_version above) but keeps the
+# stock plugin's pre-14 fallback paths (GKScore, GKPlayer.playerID,
+# GKGameCenterViewController.viewState). Those now resolve as deprecated for the
+# raised target; silence the noise so real warnings stay visible.
+if env['plugin'] == 'gamecenter':
+    env.Append(CCFLAGS=['-Wno-deprecated-declarations'])
 
 env.Append(CCFLAGS=['-arch', env['arch'], "-isysroot", "$IOS_SDK_PATH", "-stdlib=libc++", '-isysroot', sdk_path])
 env.Append(CCFLAGS=['-DPTRCALL_ENABLED'])

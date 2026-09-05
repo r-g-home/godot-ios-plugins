@@ -75,6 +75,10 @@ static NSMutableDictionary<NSString *, NSArray<GKSavedGame *> *> *gc_conflicting
 static GodotGameCenterSavedGamesListener *gc_saved_games_listener = nil;
 static bool gc_saved_games_listener_registered = false;
 
+// GKLeaderboard instances, cached by leaderboard ID after the first load so
+// repeated load_leaderboard_scores() calls skip loadLeaderboardsWithIDs.
+static NSMutableDictionary<NSString *, GKLeaderboard *> *gc_leaderboards = nil;
+
 static NSData *gc_nsdata_from_packed(const PackedByteArray &p_data) {
 	if (p_data.size() <= 0) {
 		return [NSData data];
@@ -110,6 +114,42 @@ static Dictionary gc_saved_game_to_dict(GKSavedGame *p_game) {
 	return d;
 }
 
+// Runs GKLeaderboard.loadEntries on an already-loaded board and pushes the
+// "leaderboard_scores" event. Shared by the cached and freshly-loaded paths.
+static void gc_load_leaderboard_entries(GKLeaderboard *p_board, NSString *p_leaderboard_id, NSRange p_range) {
+	[p_board loadEntriesForPlayerScope:GKLeaderboardPlayerScopeGlobal
+							timeScope:GKLeaderboardTimeScopeAllTime
+								range:p_range
+					completionHandler:^(GKLeaderboardEntry *local_player_entry, NSArray<GKLeaderboardEntry *> *entries, NSInteger total_player_count, NSError *error) {
+						Dictionary ret;
+						ret["type"] = "leaderboard_scores";
+						ret["leaderboard_id"] = gc_string_from_nsstring(p_leaderboard_id);
+						if (error == nil) {
+							ret["result"] = "ok";
+							ret["total"] = (int64_t)total_player_count;
+							Array scores;
+							for (GKLeaderboardEntry *entry in entries) {
+								Dictionary row;
+								row["rank"] = (int64_t)entry.rank;
+								row["player"] = gc_string_from_nsstring(entry.player.displayName);
+								row["score"] = (int64_t)entry.score;
+								row["date"] = entry.date ? (int64_t)[entry.date timeIntervalSince1970] : (int64_t)0;
+								row["level"] = (int64_t)entry.context;
+								scores.push_back(row);
+							}
+							ret["scores"] = scores;
+						} else {
+							ret["result"] = "error";
+							ret["error_code"] = (int64_t)error.code;
+							ret["error_description"] = [error.localizedDescription UTF8String];
+						}
+
+						if (GameCenter::get_singleton()) {
+							GameCenter::get_singleton()->push_pending_event(ret);
+						}
+					}];
+}
+
 void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("authenticate"), &GameCenter::authenticate);
 	ClassDB::bind_method(D_METHOD("is_authenticated"), &GameCenter::is_authenticated);
@@ -127,6 +167,9 @@ void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("save_game_data", "name", "data"), &GameCenter::save_game_data);
 	ClassDB::bind_method(D_METHOD("delete_saved_game", "name"), &GameCenter::delete_saved_game);
 	ClassDB::bind_method(D_METHOD("resolve_conflicting_saved_games", "name", "data"), &GameCenter::resolve_conflicting_saved_games);
+
+	ClassDB::bind_method(D_METHOD("submit_score", "leaderboard_id", "score"), &GameCenter::submit_score);
+	ClassDB::bind_method(D_METHOD("load_leaderboard_scores", "leaderboard_id", "start_rank", "count"), &GameCenter::load_leaderboard_scores);
 
 	ClassDB::bind_method(D_METHOD("get_pending_event_count"), &GameCenter::get_pending_event_count);
 	ClassDB::bind_method(D_METHOD("pop_pending_event"), &GameCenter::pop_pending_event);
@@ -649,6 +692,84 @@ Error GameCenter::resolve_conflicting_saved_games(String p_name, PackedByteArray
 	return OK;
 };
 
+Error GameCenter::submit_score(String p_leaderboard_id, int p_score) {
+	if (NSClassFromString(@"GKLeaderboard") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+	ERR_FAIL_COND_V(![GKLeaderboard respondsToSelector:@selector(submitScore:context:player:leaderboardIDs:completionHandler:)], ERR_UNAVAILABLE);
+
+	NSString *leaderboard_id = [[NSString alloc] initWithUTF8String:p_leaderboard_id.utf8().get_data()];
+
+	[GKLeaderboard submitScore:(NSInteger)p_score
+					  context:0
+					   player:[GKLocalPlayer localPlayer]
+			   leaderboardIDs:@[ leaderboard_id ]
+			completionHandler:^(NSError *error) {
+				Dictionary ret;
+				ret["type"] = "score_submitted";
+				ret["leaderboard_id"] = gc_string_from_nsstring(leaderboard_id);
+				if (error == nil) {
+					ret["result"] = "ok";
+				} else {
+					ret["result"] = "error";
+					ret["error_code"] = (int64_t)error.code;
+					ret["error_description"] = [error.localizedDescription UTF8String];
+				};
+
+				pending_events.push_back(ret);
+			}];
+
+	return OK;
+};
+
+Error GameCenter::load_leaderboard_scores(String p_leaderboard_id, int p_start_rank, int p_count) {
+	if (NSClassFromString(@"GKLeaderboard") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+	ERR_FAIL_COND_V(![GKLeaderboard respondsToSelector:@selector(loadLeaderboardsWithIDs:completionHandler:)], ERR_UNAVAILABLE);
+
+	NSString *leaderboard_id = [[NSString alloc] initWithUTF8String:p_leaderboard_id.utf8().get_data()];
+
+	// GKLeaderboard ranks are 1-based; the valid range length is 1..100.
+	NSInteger start = p_start_rank < 1 ? 1 : (NSInteger)p_start_rank;
+	NSInteger length = p_count < 1 ? 1 : (p_count > 100 ? 100 : (NSInteger)p_count);
+	NSRange range = NSMakeRange((NSUInteger)start, (NSUInteger)length);
+
+	GKLeaderboard *cached = gc_leaderboards ? gc_leaderboards[leaderboard_id] : nil;
+	if (cached != nil) {
+		gc_load_leaderboard_entries(cached, leaderboard_id, range);
+		return OK;
+	}
+
+	[GKLeaderboard loadLeaderboardsWithIDs:@[ leaderboard_id ]
+						completionHandler:^(NSArray<GKLeaderboard *> *leaderboards, NSError *error) {
+							if (error != nil || leaderboards.count == 0) {
+								Dictionary ret;
+								ret["type"] = "leaderboard_scores";
+								ret["leaderboard_id"] = gc_string_from_nsstring(leaderboard_id);
+								ret["result"] = "error";
+								if (error != nil) {
+									ret["error_code"] = (int64_t)error.code;
+									ret["error_description"] = [error.localizedDescription UTF8String];
+								} else {
+									ret["error_description"] = "leaderboard not found";
+								}
+								pending_events.push_back(ret);
+								return;
+							};
+
+							GKLeaderboard *board = leaderboards.firstObject;
+							if (gc_leaderboards == nil) {
+								gc_leaderboards = [NSMutableDictionary dictionary];
+							}
+							gc_leaderboards[leaderboard_id] = board;
+
+							gc_load_leaderboard_entries(board, leaderboard_id, range);
+						}];
+
+	return OK;
+};
+
 void GameCenter::game_center_closed() {
 	Dictionary ret;
 	ret["type"] = "show_game_center";
@@ -692,6 +813,7 @@ GameCenter::~GameCenter() {
 	}
 	gc_saved_games_listener_registered = false;
 	gc_conflicting_games = nil;
+	gc_leaderboards = nil;
 }
 
 // GKLocalPlayerListener that surfaces diverged versions of a saved game.

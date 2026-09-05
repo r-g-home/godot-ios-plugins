@@ -73,6 +73,12 @@ public:
 	Error delete_saved_game(String p_name);
 	Error resolve_conflicting_saved_games(String p_name, PackedByteArray p_data);
 
+	// Leaderboard read + submit (GKLeaderboard, iOS 14+) - added by the fork.
+	// The stock plugin only writes via post_score / GKScore and shows Apple's
+	// UI; our LeaderboardWindow needs ranked entries.
+	Error submit_score(String p_leaderboard_id, int p_score);
+	Error load_leaderboard_scores(String p_leaderboard_id, int p_start_rank, int p_count);
+
 	// Registers the GKLocalPlayerListener that surfaces conflicting saved
 	// games. Called once, after authentication succeeds. Safe to call again.
 	void register_saved_games_listener();
