@@ -64,6 +64,23 @@ public:
 	Error show_game_center(Dictionary p_params);
 	Error request_identity_verification_signature();
 
+	// Saved Games (GameKit GKSavedGame) - added by the Crystal Tempest fork.
+	// Each kicks off an async GameKit call and pushes a Dictionary result to
+	// the pending-event queue, mirroring the methods above.
+	Error fetch_saved_games();
+	Error load_saved_game(String p_name);
+	Error save_game_data(String p_name, PackedByteArray p_data);
+	Error delete_saved_game(String p_name);
+	Error resolve_conflicting_saved_games(String p_name, PackedByteArray p_data);
+
+	// Registers the GKLocalPlayerListener that surfaces conflicting saved
+	// games. Called once, after authentication succeeds. Safe to call again.
+	void register_saved_games_listener();
+
+	// Appends an event to the pending-event queue. Used by the GameKit
+	// completion handlers and by the saved-games conflict listener.
+	void push_pending_event(Variant p_event);
+
 	void game_center_closed();
 
 	int get_pending_event_count();

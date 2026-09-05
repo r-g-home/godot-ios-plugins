@@ -63,6 +63,53 @@ typedef PoolRealArray GodotFloatArray;
 GameCenter *GameCenter::instance = NULL;
 GodotGameCenterDelegate *gameCenterDelegate = nil;
 
+// --- Saved Games (GKSavedGame) support - Crystal Tempest fork ----------------
+
+// Versions handed to us by player:hasConflictingSavedGames:, keyed by saved
+// game name. resolve_conflicting_saved_games() consumes the matching entry.
+static NSMutableDictionary<NSString *, NSArray<GKSavedGame *> *> *gc_conflicting_games = nil;
+
+@interface GodotGameCenterSavedGamesListener : NSObject <GKLocalPlayerListener>
+@end
+
+static GodotGameCenterSavedGamesListener *gc_saved_games_listener = nil;
+static bool gc_saved_games_listener_registered = false;
+
+static NSData *gc_nsdata_from_packed(const PackedByteArray &p_data) {
+	if (p_data.size() <= 0) {
+		return [NSData data];
+	}
+	return [NSData dataWithBytes:(const void *)p_data.ptr() length:(NSUInteger)p_data.size()];
+}
+
+static PackedByteArray gc_packed_from_nsdata(NSData *p_data) {
+	PackedByteArray out;
+	if (p_data == nil || p_data.length == 0) {
+		return out;
+	}
+	if (out.resize((int)p_data.length) != OK) {
+		return PackedByteArray();
+	}
+	[p_data getBytes:(void *)out.ptrw() length:p_data.length];
+	return out;
+}
+
+static String gc_string_from_nsstring(NSString *p_str) {
+	if (p_str == nil) {
+		return String();
+	}
+	const char *utf8 = [p_str UTF8String];
+	return String::utf8(utf8 != NULL ? utf8 : "");
+}
+
+static Dictionary gc_saved_game_to_dict(GKSavedGame *p_game) {
+	Dictionary d;
+	d["name"] = gc_string_from_nsstring(p_game.name);
+	d["device"] = gc_string_from_nsstring(p_game.deviceName);
+	d["modified"] = p_game.modificationDate ? (int64_t)[p_game.modificationDate timeIntervalSince1970] : (int64_t)0;
+	return d;
+}
+
 void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("authenticate"), &GameCenter::authenticate);
 	ClassDB::bind_method(D_METHOD("is_authenticated"), &GameCenter::is_authenticated);
@@ -74,6 +121,12 @@ void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("request_achievement_descriptions"), &GameCenter::request_achievement_descriptions);
 	ClassDB::bind_method(D_METHOD("show_game_center"), &GameCenter::show_game_center);
 	ClassDB::bind_method(D_METHOD("request_identity_verification_signature"), &GameCenter::request_identity_verification_signature);
+
+	ClassDB::bind_method(D_METHOD("fetch_saved_games"), &GameCenter::fetch_saved_games);
+	ClassDB::bind_method(D_METHOD("load_saved_game", "name"), &GameCenter::load_saved_game);
+	ClassDB::bind_method(D_METHOD("save_game_data", "name", "data"), &GameCenter::save_game_data);
+	ClassDB::bind_method(D_METHOD("delete_saved_game", "name"), &GameCenter::delete_saved_game);
+	ClassDB::bind_method(D_METHOD("resolve_conflicting_saved_games", "name", "data"), &GameCenter::resolve_conflicting_saved_games);
 
 	ClassDB::bind_method(D_METHOD("get_pending_event_count"), &GameCenter::get_pending_event_count);
 	ClassDB::bind_method(D_METHOD("pop_pending_event"), &GameCenter::pop_pending_event);
@@ -118,6 +171,7 @@ Error GameCenter::authenticate() {
 				}
 
 				GameCenter::get_singleton()->authenticated = true;
+				GameCenter::get_singleton()->register_saved_games_listener();
 			} else {
 				ret["result"] = "error";
 				ret["error_code"] = (int64_t)error.code;
@@ -375,6 +429,226 @@ Error GameCenter::request_identity_verification_signature() {
 	return OK;
 };
 
+void GameCenter::push_pending_event(Variant p_event) {
+	pending_events.push_back(p_event);
+}
+
+void GameCenter::register_saved_games_listener() {
+	if (gc_saved_games_listener_registered) {
+		return;
+	}
+	if (NSClassFromString(@"GKLocalPlayer") == nil) {
+		return;
+	}
+	if (gc_saved_games_listener == nil) {
+		gc_saved_games_listener = [[GodotGameCenterSavedGamesListener alloc] init];
+	}
+	[[GKLocalPlayer localPlayer] registerListener:gc_saved_games_listener];
+	gc_saved_games_listener_registered = true;
+}
+
+Error GameCenter::fetch_saved_games() {
+	if (NSClassFromString(@"GKLocalPlayer") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+
+	GKLocalPlayer *player = [GKLocalPlayer localPlayer];
+	ERR_FAIL_COND_V(![player respondsToSelector:@selector(fetchSavedGamesWithCompletionHandler:)], ERR_UNAVAILABLE);
+
+	[player fetchSavedGamesWithCompletionHandler:^(NSArray<GKSavedGame *> *games, NSError *error) {
+		Dictionary ret;
+		ret["type"] = "saved_games";
+		if (error == nil) {
+			ret["result"] = "ok";
+			Array saved_games;
+			for (GKSavedGame *game in games) {
+				saved_games.push_back(gc_saved_game_to_dict(game));
+			}
+			ret["saved_games"] = saved_games;
+		} else {
+			ret["result"] = "error";
+			ret["error_code"] = (int64_t)error.code;
+			ret["error_description"] = [error.localizedDescription UTF8String];
+		};
+
+		pending_events.push_back(ret);
+	}];
+
+	return OK;
+};
+
+Error GameCenter::load_saved_game(String p_name) {
+	if (NSClassFromString(@"GKLocalPlayer") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+
+	GKLocalPlayer *player = [GKLocalPlayer localPlayer];
+	ERR_FAIL_COND_V(![player respondsToSelector:@selector(fetchSavedGamesWithCompletionHandler:)], ERR_UNAVAILABLE);
+
+	NSString *name_str = [[NSString alloc] initWithUTF8String:p_name.utf8().get_data()];
+
+	[player fetchSavedGamesWithCompletionHandler:^(NSArray<GKSavedGame *> *games, NSError *error) {
+		if (error != nil) {
+			Dictionary ret;
+			ret["type"] = "saved_game_loaded";
+			ret["name"] = gc_string_from_nsstring(name_str);
+			ret["result"] = "error";
+			ret["error_code"] = (int64_t)error.code;
+			ret["error_description"] = [error.localizedDescription UTF8String];
+			pending_events.push_back(ret);
+			return;
+		};
+
+		GKSavedGame *match = nil;
+		for (GKSavedGame *game in games) {
+			if ([game.name isEqualToString:name_str]) {
+				match = game;
+				break;
+			}
+		};
+
+		if (match == nil) {
+			Dictionary ret;
+			ret["type"] = "saved_game_loaded";
+			ret["name"] = gc_string_from_nsstring(name_str);
+			ret["result"] = "error";
+			ret["error_description"] = "not found";
+			pending_events.push_back(ret);
+			return;
+		};
+
+		[match loadDataWithCompletionHandler:^(NSData *data, NSError *load_error) {
+			Dictionary ret;
+			ret["type"] = "saved_game_loaded";
+			ret["name"] = gc_string_from_nsstring(name_str);
+			if (load_error == nil && data != nil) {
+				ret["result"] = "ok";
+				ret["data"] = gc_packed_from_nsdata(data);
+			} else {
+				ret["result"] = "error";
+				if (load_error != nil) {
+					ret["error_code"] = (int64_t)load_error.code;
+					ret["error_description"] = [load_error.localizedDescription UTF8String];
+				} else {
+					ret["error_description"] = "no data";
+				}
+			};
+			pending_events.push_back(ret);
+		}];
+	}];
+
+	return OK;
+};
+
+Error GameCenter::save_game_data(String p_name, PackedByteArray p_data) {
+	if (NSClassFromString(@"GKLocalPlayer") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+
+	GKLocalPlayer *player = [GKLocalPlayer localPlayer];
+	ERR_FAIL_COND_V(![player respondsToSelector:@selector(saveGameData:withName:completionHandler:)], ERR_UNAVAILABLE);
+
+	NSString *name_str = [[NSString alloc] initWithUTF8String:p_name.utf8().get_data()];
+	NSData *data = gc_nsdata_from_packed(p_data);
+
+	[player saveGameData:data
+				withName:name_str
+	   completionHandler:^(GKSavedGame *saved_game, NSError *error) {
+		   Dictionary ret;
+		   ret["type"] = "saved_game_written";
+		   ret["name"] = gc_string_from_nsstring(name_str);
+		   if (error == nil) {
+			   ret["result"] = "ok";
+			   if (saved_game != nil) {
+				   ret["device"] = gc_string_from_nsstring(saved_game.deviceName);
+				   ret["modified"] = saved_game.modificationDate ? (int64_t)[saved_game.modificationDate timeIntervalSince1970] : (int64_t)0;
+			   }
+		   } else {
+			   ret["result"] = "error";
+			   ret["error_code"] = (int64_t)error.code;
+			   ret["error_description"] = [error.localizedDescription UTF8String];
+		   };
+
+		   pending_events.push_back(ret);
+	   }];
+
+	return OK;
+};
+
+Error GameCenter::delete_saved_game(String p_name) {
+	if (NSClassFromString(@"GKLocalPlayer") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+
+	GKLocalPlayer *player = [GKLocalPlayer localPlayer];
+	ERR_FAIL_COND_V(![player respondsToSelector:@selector(deleteSavedGamesWithName:completionHandler:)], ERR_UNAVAILABLE);
+
+	NSString *name_str = [[NSString alloc] initWithUTF8String:p_name.utf8().get_data()];
+
+	[player deleteSavedGamesWithName:name_str
+				  completionHandler:^(NSError *error) {
+					  Dictionary ret;
+					  ret["type"] = "saved_game_deleted";
+					  ret["name"] = gc_string_from_nsstring(name_str);
+					  if (error == nil) {
+						  ret["result"] = "ok";
+					  } else {
+						  ret["result"] = "error";
+						  ret["error_code"] = (int64_t)error.code;
+						  ret["error_description"] = [error.localizedDescription UTF8String];
+					  };
+
+					  pending_events.push_back(ret);
+				  }];
+
+	return OK;
+};
+
+Error GameCenter::resolve_conflicting_saved_games(String p_name, PackedByteArray p_data) {
+	if (NSClassFromString(@"GKLocalPlayer") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+
+	GKLocalPlayer *player = [GKLocalPlayer localPlayer];
+	ERR_FAIL_COND_V(![player respondsToSelector:@selector(resolveConflictingSavedGames:withData:completionHandler:)], ERR_UNAVAILABLE);
+
+	NSString *name_str = [[NSString alloc] initWithUTF8String:p_name.utf8().get_data()];
+	NSArray<GKSavedGame *> *conflicts = gc_conflicting_games ? gc_conflicting_games[name_str] : nil;
+
+	if (conflicts == nil || conflicts.count == 0) {
+		Dictionary ret;
+		ret["type"] = "saved_games_conflict_resolved";
+		ret["name"] = gc_string_from_nsstring(name_str);
+		ret["result"] = "error";
+		ret["error_description"] = "no conflicting saved games pending for this name";
+		pending_events.push_back(ret);
+		return ERR_UNAVAILABLE;
+	};
+
+	NSData *data = gc_nsdata_from_packed(p_data);
+
+	[player resolveConflictingSavedGames:conflicts
+							   withData:data
+					  completionHandler:^(NSArray<GKSavedGame *> *saved_games, NSError *error) {
+						  Dictionary ret;
+						  ret["type"] = "saved_games_conflict_resolved";
+						  ret["name"] = gc_string_from_nsstring(name_str);
+						  if (error == nil) {
+							  ret["result"] = "ok";
+						  } else {
+							  ret["result"] = "error";
+							  ret["error_code"] = (int64_t)error.code;
+							  ret["error_description"] = [error.localizedDescription UTF8String];
+						  };
+
+						  pending_events.push_back(ret);
+					  }];
+
+	[gc_conflicting_games removeObjectForKey:name_str];
+
+	return OK;
+};
+
 void GameCenter::game_center_closed() {
 	Dictionary ret;
 	ret["type"] = "show_game_center";
@@ -409,4 +683,90 @@ GameCenter::~GameCenter() {
 	if (gameCenterDelegate) {
 		gameCenterDelegate = nil;
 	}
+
+	if (gc_saved_games_listener != nil) {
+		if (NSClassFromString(@"GKLocalPlayer") != nil) {
+			[[GKLocalPlayer localPlayer] unregisterListener:gc_saved_games_listener];
+		}
+		gc_saved_games_listener = nil;
+	}
+	gc_saved_games_listener_registered = false;
+	gc_conflicting_games = nil;
 }
+
+// GKLocalPlayerListener that surfaces diverged versions of a saved game.
+// player:hasConflictingSavedGames: hands us every version across every
+// conflicting name; we group by name, load the bytes of each version, and
+// push one "saved_game_conflict" event per name once its versions are in.
+@implementation GodotGameCenterSavedGamesListener
+
+- (void)player:(GKPlayer *)player hasConflictingSavedGames:(NSArray<GKSavedGame *> *)savedGames {
+	NSMutableDictionary<NSString *, NSMutableArray<GKSavedGame *> *> *by_name = [NSMutableDictionary dictionary];
+	for (GKSavedGame *game in savedGames) {
+		NSString *name = game.name ? game.name : @"";
+		NSMutableArray<GKSavedGame *> *group = by_name[name];
+		if (group == nil) {
+			group = [NSMutableArray array];
+			by_name[name] = group;
+		}
+		[group addObject:game];
+	}
+
+	if (gc_conflicting_games == nil) {
+		gc_conflicting_games = [NSMutableDictionary dictionary];
+	}
+
+	for (NSString *name in by_name) {
+		NSArray<GKSavedGame *> *group = [by_name[name] copy];
+		gc_conflicting_games[name] = group;
+
+		NSUInteger count = group.count;
+		NSMutableArray *blobs = [NSMutableArray arrayWithCapacity:count];
+		for (NSUInteger i = 0; i < count; i++) {
+			[blobs addObject:[NSNull null]];
+		}
+
+		dispatch_group_t load_group = dispatch_group_create();
+		NSLock *blobs_lock = [[NSLock alloc] init];
+		__block bool any_error = false;
+
+		for (NSUInteger i = 0; i < count; i++) {
+			dispatch_group_enter(load_group);
+			[group[i] loadDataWithCompletionHandler:^(NSData *data, NSError *error) {
+				if (data != nil && error == nil) {
+					[blobs_lock lock];
+					blobs[i] = data;
+					[blobs_lock unlock];
+				} else {
+					any_error = true;
+				}
+				dispatch_group_leave(load_group);
+			}];
+		}
+
+		NSString *name_copy = [name copy];
+		dispatch_group_notify(load_group, dispatch_get_main_queue(), ^{
+			Dictionary ret;
+			ret["type"] = "saved_game_conflict";
+			ret["name"] = gc_string_from_nsstring(name_copy);
+
+			Array versions;
+			for (NSData *blob in blobs) {
+				if ([blob isKindOfClass:[NSData class]]) {
+					versions.push_back(gc_packed_from_nsdata(blob));
+				}
+			}
+			ret["versions"] = versions;
+			ret["result"] = any_error ? "error" : "ok";
+			if (any_error) {
+				ret["error_description"] = "failed to load one or more conflicting versions";
+			}
+
+			if (GameCenter::get_singleton()) {
+				GameCenter::get_singleton()->push_pending_event(ret);
+			}
+		});
+	}
+}
+
+@end
