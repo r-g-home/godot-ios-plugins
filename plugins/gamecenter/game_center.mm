@@ -50,6 +50,25 @@
 
 #import <GameKit/GameKit.h>
 
+// Stock plugin used [[UIApplication sharedApplication] delegate].window
+// .rootViewController, which is nil on Godot 4.5+ (apple_embedded). Resolve
+// from the key window at present-time instead. -- Crystal Tempest fork
+static UIViewController *gc_top_view_controller() {
+	NSArray<UIWindow *> *windows = [UIApplication sharedApplication].windows;
+	UIWindow *window = nil;
+	for (UIWindow *w in windows) {
+		if (w.isKeyWindow) { window = w; break; }
+	}
+	if (window == nil) {
+		for (UIWindow *w in windows) {
+			if (w.rootViewController != nil) { window = w; break; }
+		}
+	}
+	UIViewController *vc = window.rootViewController;
+	while (vc.presentedViewController != nil) { vc = vc.presentedViewController; }
+	return vc;
+}
+
 #if VERSION_MAJOR == 4
 typedef PackedStringArray GodotStringArray;
 typedef PackedInt32Array GodotIntArray;
@@ -184,21 +203,21 @@ Error GameCenter::authenticate() {
 	GKLocalPlayer *player = [GKLocalPlayer localPlayer];
 	ERR_FAIL_COND_V(![player respondsToSelector:@selector(authenticateHandler)], ERR_UNAVAILABLE);
 
-	UIViewController *root_controller = [[UIApplication sharedApplication] delegate].window.rootViewController;
-	ERR_FAIL_COND_V(!root_controller, FAILED);
-
 	// This handler is called several times.  First when the view needs to be shown, then again
 	// after the view is cancelled or the user logs in.  Or if the user's already logged in, it's
 	// called just once to confirm they're authenticated.  This is why no result needs to be specified
 	// in the presentViewController phase. In this case, more calls to this function will follow.
-	_weakify(root_controller);
 	_weakify(player);
 	player.authenticateHandler = (^(UIViewController *controller, NSError *error) {
-		_strongify(root_controller);
 		_strongify(player);
 
 		if (controller) {
-			[root_controller presentViewController:controller animated:YES completion:nil];
+			UIViewController *root_controller = gc_top_view_controller();
+			if (root_controller) {
+				[root_controller presentViewController:controller animated:YES completion:nil];
+			} else {
+				NSLog(@"GameCenter: no view controller available to present the sign-in UI");
+			}
 		} else {
 			Dictionary ret;
 			ret["type"] = "authentication";
@@ -417,7 +436,7 @@ Error GameCenter::show_game_center(Dictionary p_params) {
 	GKGameCenterViewController *controller = [[GKGameCenterViewController alloc] init];
 	ERR_FAIL_COND_V(!controller, FAILED);
 
-	UIViewController *root_controller = [[UIApplication sharedApplication] delegate].window.rootViewController;
+	UIViewController *root_controller = gc_top_view_controller();
 	ERR_FAIL_COND_V(!root_controller, FAILED);
 
 	controller.gameCenterDelegate = gameCenterDelegate;
