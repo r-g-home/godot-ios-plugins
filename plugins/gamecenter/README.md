@@ -4,7 +4,8 @@
 
 ### Authorization
 
-`authenticate()` - Performs user authentication.  
+`authenticate()` - Performs user authentication. Presents the Game Center sign-in sheet if the player is signed out. Generates an `authentication` event.  
+`authenticate_silently()` - Like `authenticate()` but never presents the sign-in sheet (Crystal Tempest fork): if the player is already signed in it authenticates silently and generates an `authentication` `ok` event; if signed out it generates an `authentication` `error` event with `error_description` `"interactive sign-in required"` and shows no UI. For a launch-time "connect if possible" with no unprompted sheet; follow up with `authenticate()` from an explicit sign-in button.  
 `is_authenticated()` - Returns authentication state.  
 
 ### GameCenter methods

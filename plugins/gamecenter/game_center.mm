@@ -171,6 +171,7 @@ static void gc_load_leaderboard_entries(GKLeaderboard *p_board, NSString *p_lead
 
 void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("authenticate"), &GameCenter::authenticate);
+	ClassDB::bind_method(D_METHOD("authenticate_silently"), &GameCenter::authenticate_silently);
 	ClassDB::bind_method(D_METHOD("is_authenticated"), &GameCenter::is_authenticated);
 
 	ClassDB::bind_method(D_METHOD("post_score"), &GameCenter::post_score);
@@ -195,6 +196,14 @@ void GameCenter::_bind_methods() {
 };
 
 Error GameCenter::authenticate() {
+	return do_authenticate(true);
+}
+
+Error GameCenter::authenticate_silently() {
+	return do_authenticate(false);
+}
+
+Error GameCenter::do_authenticate(bool p_interactive) {
 	//if this class isn't available, game center isn't implemented
 	if ((NSClassFromString(@"GKLocalPlayer")) == nil) {
 		return ERR_UNAVAILABLE;
@@ -212,6 +221,17 @@ Error GameCenter::authenticate() {
 		_strongify(player);
 
 		if (controller) {
+			if (!p_interactive) {
+				// Silent request: a signed-out player needs the sheet, which
+				// the caller did not ask for. Report it, present nothing.
+				Dictionary ret;
+				ret["type"] = "authentication";
+				ret["result"] = "error";
+				ret["error_description"] = "interactive sign-in required";
+				GameCenter::get_singleton()->authenticated = false;
+				pending_events.push_back(ret);
+				return;
+			}
 			UIViewController *root_controller = gc_top_view_controller();
 			if (root_controller) {
 				[root_controller presentViewController:controller animated:YES completion:nil];

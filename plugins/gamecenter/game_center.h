@@ -52,8 +52,22 @@ class GameCenter : public Object {
 
 	void return_connect_error(const char *p_error_description);
 
+	// Shared body of authenticate() / authenticate_silently(). p_interactive
+	// controls only what happens when GameKit hands back a sign-in view
+	// controller: true presents it (the historical authenticate() behaviour),
+	// false pushes an "interactive sign-in required" authentication error and
+	// presents nothing. The silent-success and error paths are identical.
+	Error do_authenticate(bool p_interactive);
+
 public:
 	Error authenticate();
+
+	// Like authenticate(), but never presents the Game Center sign-in sheet:
+	// a signed-out player yields an "authentication" error event instead of
+	// UI. For a launch-time "connect if already signed in" with no unprompted
+	// sheet. -- Crystal Tempest fork
+	Error authenticate_silently();
+
 	bool is_authenticated();
 
 	Error post_score(Dictionary p_score);
