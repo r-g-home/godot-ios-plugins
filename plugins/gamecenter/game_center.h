@@ -70,6 +70,14 @@ public:
 
 	bool is_authenticated();
 
+	// The signed-in player's GKLocalPlayer.gamePlayerID - stable per player per
+	// game - or "" when nobody is signed in. Read LIVE from GameKit, not from
+	// the cached `authenticated` flag, so a system-level Game Center player
+	// switch (sign out as A, in as B) is visible just by polling this: the
+	// cached flag stays true across such a switch. Same value as the
+	// "game_player_id" field on the authentication event. -- Crystal Tempest fork
+	String get_player_id();
+
 	Error post_score(Dictionary p_score);
 	Error award_achievement(Dictionary p_params);
 	void reset_achievements();

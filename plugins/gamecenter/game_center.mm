@@ -179,6 +179,7 @@ void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("authenticate"), &GameCenter::authenticate);
 	ClassDB::bind_method(D_METHOD("authenticate_silently"), &GameCenter::authenticate_silently);
 	ClassDB::bind_method(D_METHOD("is_authenticated"), &GameCenter::is_authenticated);
+	ClassDB::bind_method(D_METHOD("get_player_id"), &GameCenter::get_player_id);
 
 	ClassDB::bind_method(D_METHOD("post_score"), &GameCenter::post_score);
 	ClassDB::bind_method(D_METHOD("award_achievement", "achievement"), &GameCenter::award_achievement);
@@ -259,6 +260,11 @@ Error GameCenter::do_authenticate(bool p_interactive) {
 				} else {
 					ret["player_id"] = [player.playerID UTF8String];
 				}
+				// Separate key, because the stock "player_id" above is the
+				// teamPlayerID and callers may already depend on that. This is
+				// gamePlayerID - the same value get_player_id() returns, so the
+				// two are safe to compare. -- Crystal Tempest fork
+				ret["game_player_id"] = gc_string_from_nsstring(player.gamePlayerID);
 
 				GameCenter::get_singleton()->authenticated = true;
 				GameCenter::get_singleton()->register_saved_games_listener();
@@ -282,6 +288,21 @@ bool GameCenter::is_authenticated() {
 
 String GameCenter::get_plugin_version() {
 	return String(GAMECENTER_PLUGIN_VERSION);
+};
+
+String GameCenter::get_player_id() {
+	if (NSClassFromString(@"GKLocalPlayer") == nil) {
+		return String();
+	}
+	// Deliberately GKLocalPlayer's own isAuthenticated, not the cached
+	// `authenticated` member: that is only written by the authenticate
+	// handler, so it survives a system-level player switch unchanged and
+	// would report the old player's id as still valid.
+	GKLocalPlayer *player = [GKLocalPlayer localPlayer];
+	if (!player.isAuthenticated) {
+		return String();
+	}
+	return gc_string_from_nsstring(player.gamePlayerID);
 };
 
 Error GameCenter::post_score(Dictionary p_score) {
