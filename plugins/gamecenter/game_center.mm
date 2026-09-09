@@ -50,6 +50,12 @@
 
 #import <GameKit/GameKit.h>
 
+// Set by SConstruct from `git rev-parse --short HEAD` of the fork; this
+// fallback only bites when compiled outside the build script. -- CT fork
+#ifndef GAMECENTER_PLUGIN_VERSION
+#define GAMECENTER_PLUGIN_VERSION "unknown"
+#endif
+
 // Stock plugin used [[UIApplication sharedApplication] delegate].window
 // .rootViewController, which is nil on Godot 4.5+ (apple_embedded). Resolve
 // from the key window at present-time instead. -- Crystal Tempest fork
@@ -191,6 +197,7 @@ void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("submit_score", "leaderboard_id", "score"), &GameCenter::submit_score);
 	ClassDB::bind_method(D_METHOD("submit_score_with_context", "leaderboard_id", "score", "context"), &GameCenter::submit_score_with_context);
 	ClassDB::bind_method(D_METHOD("load_leaderboard_scores", "leaderboard_id", "start_rank", "count"), &GameCenter::load_leaderboard_scores);
+	ClassDB::bind_method(D_METHOD("get_plugin_version"), &GameCenter::get_plugin_version);
 
 	ClassDB::bind_method(D_METHOD("get_pending_event_count"), &GameCenter::get_pending_event_count);
 	ClassDB::bind_method(D_METHOD("pop_pending_event"), &GameCenter::pop_pending_event);
@@ -271,6 +278,10 @@ Error GameCenter::do_authenticate(bool p_interactive) {
 
 bool GameCenter::is_authenticated() {
 	return authenticated;
+};
+
+String GameCenter::get_plugin_version() {
+	return String(GAMECENTER_PLUGIN_VERSION);
 };
 
 Error GameCenter::post_score(Dictionary p_score) {

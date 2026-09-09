@@ -4,6 +4,7 @@
 
 ### Authorization
 
+`get_plugin_version()` - Returns the fork's git revision, stamped in at build time (Crystal Tempest fork): a short commit hash, `+` appended if built from a dirty tree, or `"unknown"` if not built from a git checkout. Lets a game show which plugin build it is actually linking.  
 `authenticate()` - Performs user authentication. Presents the Game Center sign-in sheet if the player is signed out. Generates an `authentication` event.  
 `authenticate_silently()` - Like `authenticate()` but never presents the sign-in sheet (Crystal Tempest fork): if the player is already signed in it authenticates silently and generates an `authentication` `ok` event; if signed out it generates an `authentication` `error` event with `error_description` `"interactive sign-in required"` and shows no UI. For a launch-time "connect if possible" with no unprompted sheet; follow up with `authenticate()` from an explicit sign-in button.  
 `is_authenticated()` - Returns authentication state.  

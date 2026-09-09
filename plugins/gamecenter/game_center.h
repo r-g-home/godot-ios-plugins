@@ -97,6 +97,11 @@ public:
 	Error submit_score_with_context(String p_leaderboard_id, int p_score, int p_context);
 	Error load_leaderboard_scores(String p_leaderboard_id, int p_start_rank, int p_count);
 
+	// The fork's git revision, stamped in at build time (SConstruct). "+" =
+	// built from a dirty tree, "unknown" = not built from a git checkout. Lets
+	// the game show which plugin build it is actually linking. -- CT fork
+	String get_plugin_version();
+
 	// Registers the GKLocalPlayerListener that surfaces conflicting saved
 	// games. Called once, after authentication succeeds. Safe to call again.
 	void register_saved_games_listener();

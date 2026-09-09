@@ -93,6 +93,19 @@ env.Append(CCFLAGS=[
 if env['plugin'] == 'gamecenter':
     env.Append(CCFLAGS=['-Wno-deprecated-declarations'])
 
+    # Stamp the fork's git revision so GameCenter::get_plugin_version() can
+    # report which plugin build the game is actually linking. The game's own
+    # build stamp does not identify the plugin - it is a separate fork. "+"
+    # marks a dirty tree; "unknown" if this is not a git checkout.
+    try:
+        _rev = decode_utf8(subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD']).strip())
+        if subprocess.check_output(['git', 'status', '--porcelain']).strip():
+            _rev += '+'
+    except (subprocess.CalledProcessError, OSError):
+        _rev = 'unknown'
+    env.Append(CPPDEFINES=[('GAMECENTER_PLUGIN_VERSION', '\\"' + _rev + '\\"')])
+
 env.Append(CCFLAGS=['-arch', env['arch'], "-isysroot", "$IOS_SDK_PATH", "-stdlib=libc++", '-isysroot', sdk_path])
 env.Append(CCFLAGS=['-DPTRCALL_ENABLED'])
 env.Prepend(CXXFLAGS=[
