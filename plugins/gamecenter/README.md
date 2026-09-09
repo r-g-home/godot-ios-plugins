@@ -44,6 +44,7 @@ custom UI. The stock `post_score` (via the deprecated `GKScore`) still works;
 these are additive.
 
 `submit_score(String leaderboard_id, int score)` - Submits `score` to the leaderboard via `GKLeaderboard.submitScore(...leaderboardIDs:)` (context 0). Event type `score_submitted`, with `leaderboard_id`.  
+`submit_score_with_context(String leaderboard_id, int score, int context)` - Same, but attaches `context` (a non-negative int) to the score as `GKLeaderboardEntry.context`, which `load_leaderboard_scores` surfaces per row as `level`. Same `score_submitted` event. Distinct name so callers can feature-detect it with `Object.has_method`.  
 `load_leaderboard_scores(String leaderboard_id, int start_rank, int count)` - Loads `count` global / all-time ranked entries starting at `start_rank` (**1-based**; `count` clamped to 1..100). Loads and caches the `GKLeaderboard` on first use. Event type `leaderboard_scores`, with `leaderboard_id`, `total` (int, total player count) and `scores` = array of `{ rank: int, player: String (displayName), score: int, date: int (unix seconds), level: int (from entry.context) }`.  
 
 ## Properties

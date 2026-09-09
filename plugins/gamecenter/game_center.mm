@@ -189,6 +189,7 @@ void GameCenter::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("resolve_conflicting_saved_games", "name", "data"), &GameCenter::resolve_conflicting_saved_games);
 
 	ClassDB::bind_method(D_METHOD("submit_score", "leaderboard_id", "score"), &GameCenter::submit_score);
+	ClassDB::bind_method(D_METHOD("submit_score_with_context", "leaderboard_id", "score", "context"), &GameCenter::submit_score_with_context);
 	ClassDB::bind_method(D_METHOD("load_leaderboard_scores", "leaderboard_id", "start_rank", "count"), &GameCenter::load_leaderboard_scores);
 
 	ClassDB::bind_method(D_METHOD("get_pending_event_count"), &GameCenter::get_pending_event_count);
@@ -731,6 +732,31 @@ Error GameCenter::resolve_conflicting_saved_games(String p_name, PackedByteArray
 	return OK;
 };
 
+// Shared body of submit_score / submit_score_with_context. Pushes the same
+// "score_submitted" event (keyed on leaderboard_id) either way.
+static void gc_submit_score(NSString *p_leaderboard_id, NSInteger p_score, NSUInteger p_context) {
+	[GKLeaderboard submitScore:p_score
+					  context:p_context
+					   player:[GKLocalPlayer localPlayer]
+			   leaderboardIDs:@[ p_leaderboard_id ]
+			completionHandler:^(NSError *error) {
+				Dictionary ret;
+				ret["type"] = "score_submitted";
+				ret["leaderboard_id"] = gc_string_from_nsstring(p_leaderboard_id);
+				if (error == nil) {
+					ret["result"] = "ok";
+				} else {
+					ret["result"] = "error";
+					ret["error_code"] = (int64_t)error.code;
+					ret["error_description"] = [error.localizedDescription UTF8String];
+				}
+
+				if (GameCenter::get_singleton()) {
+					GameCenter::get_singleton()->push_pending_event(ret);
+				}
+			}];
+}
+
 Error GameCenter::submit_score(String p_leaderboard_id, int p_score) {
 	if (NSClassFromString(@"GKLeaderboard") == nil) {
 		return ERR_UNAVAILABLE;
@@ -738,26 +764,18 @@ Error GameCenter::submit_score(String p_leaderboard_id, int p_score) {
 	ERR_FAIL_COND_V(![GKLeaderboard respondsToSelector:@selector(submitScore:context:player:leaderboardIDs:completionHandler:)], ERR_UNAVAILABLE);
 
 	NSString *leaderboard_id = [[NSString alloc] initWithUTF8String:p_leaderboard_id.utf8().get_data()];
+	gc_submit_score(leaderboard_id, (NSInteger)p_score, 0);
+	return OK;
+};
 
-	[GKLeaderboard submitScore:(NSInteger)p_score
-					  context:0
-					   player:[GKLocalPlayer localPlayer]
-			   leaderboardIDs:@[ leaderboard_id ]
-			completionHandler:^(NSError *error) {
-				Dictionary ret;
-				ret["type"] = "score_submitted";
-				ret["leaderboard_id"] = gc_string_from_nsstring(leaderboard_id);
-				if (error == nil) {
-					ret["result"] = "ok";
-				} else {
-					ret["result"] = "error";
-					ret["error_code"] = (int64_t)error.code;
-					ret["error_description"] = [error.localizedDescription UTF8String];
-				};
+Error GameCenter::submit_score_with_context(String p_leaderboard_id, int p_score, int p_context) {
+	if (NSClassFromString(@"GKLeaderboard") == nil) {
+		return ERR_UNAVAILABLE;
+	}
+	ERR_FAIL_COND_V(![GKLeaderboard respondsToSelector:@selector(submitScore:context:player:leaderboardIDs:completionHandler:)], ERR_UNAVAILABLE);
 
-				pending_events.push_back(ret);
-			}];
-
+	NSString *leaderboard_id = [[NSString alloc] initWithUTF8String:p_leaderboard_id.utf8().get_data()];
+	gc_submit_score(leaderboard_id, (NSInteger)p_score, (NSUInteger)(p_context < 0 ? 0 : p_context));
 	return OK;
 };
 

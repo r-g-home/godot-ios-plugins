@@ -91,6 +91,10 @@ public:
 	// The stock plugin only writes via post_score / GKScore and shows Apple's
 	// UI; our LeaderboardWindow needs ranked entries.
 	Error submit_score(String p_leaderboard_id, int p_score);
+	// Same, but attaches a GKLeaderboardEntry.context to the score (which the
+	// read side surfaces as "level"). Distinct name so the C# side can
+	// feature-detect it with HasMethod. -- Crystal Tempest fork
+	Error submit_score_with_context(String p_leaderboard_id, int p_score, int p_context);
 	Error load_leaderboard_scores(String p_leaderboard_id, int p_start_rank, int p_count);
 
 	// Registers the GKLocalPlayerListener that surfaces conflicting saved
