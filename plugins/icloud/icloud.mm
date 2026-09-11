@@ -30,17 +30,19 @@
 
 #include "icloud.h"
 
-#if VERSION_MAJOR == 4
-#if VERSION_MINOR >= 5
-#import "drivers/apple_embedded/godot_app_delegate.h"
-#else
-#import "platform/ios/app_delegate.h"
-#endif
-#else
-#import "platform/iphone/app_delegate.h"
+// Crystal Tempest fork: the stock plugin imported the Godot app delegate here
+// without using it; on Godot 4.5+ that header warns for the iOS 12 target.
+
+#import <CommonCrypto/CommonDigest.h>
+#import <Foundation/Foundation.h>
+
+// Stamped by SConstruct from the fork's git revision.
+#ifndef ICLOUD_PLUGIN_VERSION
+#define ICLOUD_PLUGIN_VERSION "unknown"
 #endif
 
-#import <Foundation/Foundation.h>
+static id icloud_kvs_observer = nil;
+static id icloud_identity_observer = nil;
 
 #if VERSION_MAJOR == 4
 typedef PackedByteArray GodotByteArray;
@@ -63,15 +65,40 @@ void ICloud::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("synchronize_key_values"), &ICloud::synchronize_key_values);
 	ClassDB::bind_method(D_METHOD("get_all_key_values"), &ICloud::get_all_key_values);
 
+	ClassDB::bind_method(D_METHOD("get_account_id"), &ICloud::get_account_id);
+	ClassDB::bind_method(D_METHOD("get_plugin_version"), &ICloud::get_plugin_version);
+
 	ClassDB::bind_method(D_METHOD("get_pending_event_count"), &ICloud::get_pending_event_count);
 	ClassDB::bind_method(D_METHOD("pop_pending_event"), &ICloud::pop_pending_event);
 };
+
+String ICloud::get_account_id() {
+	id<NSObject, NSCopying, NSCoding> token = [[NSFileManager defaultManager] ubiquityIdentityToken];
+	if (token == nil) {
+		return String();
+	}
+	NSError *error = nil;
+	NSData *archived = [NSKeyedArchiver archivedDataWithRootObject:token requiringSecureCoding:NO error:&error];
+	if (archived == nil) {
+		return String();
+	}
+	unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+	CC_SHA256(archived.bytes, (CC_LONG)archived.length, digest);
+	return String::hex_encode_buffer(digest, CC_SHA256_DIGEST_LENGTH);
+}
+
+String ICloud::get_plugin_version() {
+	return String(ICLOUD_PLUGIN_VERSION);
+}
 
 int ICloud::get_pending_event_count() {
 	return pending_events.size();
 };
 
 Variant ICloud::pop_pending_event() {
+	if (pending_events.is_empty()) {
+		return Variant();
+	}
 	Variant front = pending_events.front()->get();
 	pending_events.pop_front();
 
@@ -318,12 +345,28 @@ Error ICloud::initial_sync() {
 ICloud::ICloud() {
 	ERR_FAIL_COND(instance != NULL);
 	instance = this;
-	//connected = false;
+	// Crystal Tempest fork: both observers run on the main queue - the thread
+	// Godot's main loop reads the event queue on. The key-value store posts its
+	// change notification on a background thread, which used to push into
+	// pending_events unsynchronised.
 
-	[[NSNotificationCenter defaultCenter]
+	// The iCloud account on the device changed: signed in, signed out, or
+	// switched. get_account_id() now answers for the new account.
+	icloud_identity_observer = [[NSNotificationCenter defaultCenter]
+			addObserverForName:NSUbiquityIdentityDidChangeNotification
+						object:nil
+						 queue:[NSOperationQueue mainQueue]
+					usingBlock:^(NSNotification *notification) {
+						Dictionary ret;
+						ret["type"] = "account_changed";
+						ret["account_id"] = get_account_id();
+						pending_events.push_back(ret);
+					}];
+
+	icloud_kvs_observer = [[NSNotificationCenter defaultCenter]
 			addObserverForName:NSUbiquitousKeyValueStoreDidChangeExternallyNotification
 						object:[NSUbiquitousKeyValueStore defaultStore]
-						 queue:nil
+						 queue:[NSOperationQueue mainQueue]
 					usingBlock:^(NSNotification *notification) {
 						NSDictionary *userInfo = [notification userInfo];
 						NSInteger change = [[userInfo objectForKey:NSUbiquitousKeyValueStoreChangeReasonKey] integerValue];
@@ -368,4 +411,16 @@ ICloud::ICloud() {
 					}];
 }
 
-ICloud::~ICloud() {}
+ICloud::~ICloud() {
+	if (icloud_kvs_observer != nil) {
+		[[NSNotificationCenter defaultCenter] removeObserver:icloud_kvs_observer];
+		icloud_kvs_observer = nil;
+	}
+	if (icloud_identity_observer != nil) {
+		[[NSNotificationCenter defaultCenter] removeObserver:icloud_identity_observer];
+		icloud_identity_observer = nil;
+	}
+	if (instance == this) {
+		instance = NULL;
+	}
+}

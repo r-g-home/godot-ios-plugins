@@ -1,0 +1,17 @@
+[config]
+name="Keychain"
+binary="keychain.xcframework"
+
+initialization="register_keychain_types"
+deinitialization="unregister_keychain_types"
+
+[dependencies]
+linked=[]
+embedded=[]
+system=["Security.framework"]
+
+capabilities=[]
+
+files=[]
+
+[plist]

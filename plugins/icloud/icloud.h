@@ -55,7 +55,17 @@ public:
 	Error synchronize_key_values();
 	Variant get_all_key_values();
 
+	// Crystal Tempest fork: an opaque, stable id for the iCloud account signed
+	// in on this device - the SHA-256 (hex) of the archived
+	// NSFileManager.ubiquityIdentityToken - or "" when there is none. Never
+	// shown or sent anywhere; it need not match across devices.
+	String get_account_id();
+
+	// Crystal Tempest fork: the fork's git revision this plugin was built from.
+	String get_plugin_version();
+
 	int get_pending_event_count();
+	// Crystal Tempest fork: null when the queue is empty (it used to crash).
 	Variant pop_pending_event();
 
 	static ICloud *get_singleton();

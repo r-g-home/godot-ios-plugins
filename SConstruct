@@ -24,7 +24,7 @@ opts.Add(EnumVariable('arch', "Compilation Architecture", '', ['', 'arm64', 'x86
 opts.Add(BoolVariable('simulator', "Compilation platform", 'no'))
 opts.Add(BoolVariable('use_llvm', "Use the LLVM / Clang compiler", 'no'))
 opts.Add(PathVariable('target_path', 'The path where the lib is installed.', 'bin/'))
-opts.Add(EnumVariable('plugin', 'Plugin to build', '', ['', 'apn', 'arkit', 'camera', 'icloud', 'gamecenter', 'inappstore', 'photo_picker']))
+opts.Add(EnumVariable('plugin', 'Plugin to build', '', ['', 'apn', 'arkit', 'camera', 'icloud', 'gamecenter', 'inappstore', 'keychain', 'photo_picker']))
 opts.Add(EnumVariable('version', 'Godot version to target', '', ['', '3.x', '4.0']))
 
 # Updates the environment with the option variables.
@@ -93,10 +93,12 @@ env.Append(CCFLAGS=[
 if env['plugin'] == 'gamecenter':
     env.Append(CCFLAGS=['-Wno-deprecated-declarations'])
 
-    # Stamp the fork's git revision so GameCenter::get_plugin_version() can
-    # report which plugin build the game is actually linking. The game's own
-    # build stamp does not identify the plugin - it is a separate fork. "+"
-    # marks a dirty tree; "unknown" if this is not a git checkout.
+# Stamp the fork's git revision into the plugins this fork changes or adds, so
+# each one's get_plugin_version() can report which plugin build the game is
+# actually linking. The game's own build stamp does not identify the plugin -
+# it is a separate fork. "+" marks a dirty tree; "unknown" if this is not a git
+# checkout. Defined as <PLUGIN>_PLUGIN_VERSION, e.g. GAMECENTER_PLUGIN_VERSION.
+if env['plugin'] in ('gamecenter', 'icloud', 'keychain'):
     try:
         _rev = decode_utf8(subprocess.check_output(
             ['git', 'rev-parse', '--short', 'HEAD']).strip())
@@ -104,7 +106,7 @@ if env['plugin'] == 'gamecenter':
             _rev += '+'
     except (subprocess.CalledProcessError, OSError):
         _rev = 'unknown'
-    env.Append(CPPDEFINES=[('GAMECENTER_PLUGIN_VERSION', '\\"' + _rev + '\\"')])
+    env.Append(CPPDEFINES=[(env['plugin'].upper() + '_PLUGIN_VERSION', '\\"' + _rev + '\\"')])
 
 env.Append(CCFLAGS=['-arch', env['arch'], "-isysroot", "$IOS_SDK_PATH", "-stdlib=libc++", '-isysroot', sdk_path])
 env.Append(CCFLAGS=['-DPTRCALL_ENABLED'])
@@ -170,6 +172,10 @@ else:
 
 if env['version'] == '4.0' and env['plugin'] == 'arkit':
     print("'arkit' plugin is 3.x only.")
+    quit();
+
+if env['version'] == '3.x' and env['plugin'] == 'keychain':
+    print("'keychain' plugin is 4.x only.")
     quit();
 
 # Adding header files
