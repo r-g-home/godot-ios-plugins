@@ -12,7 +12,7 @@ Plugin generates new event with `key_value_changed` type when values stored in t
 
 Added by the Crystal Tempest fork:
 
-`get_account_id()` - An opaque, stable id for the iCloud account signed in on this device: the SHA-256 (hex) of the archived `NSFileManager.ubiquityIdentityToken`, or `""` when there is none. Never shown or sent anywhere; it need not match across devices.  
+`get_account_id()` - An opaque, stable id for the iCloud account signed in on this device, or `""` when there is none. Each account seen on the device gets a random id, stored in the Keychain (service `<bundle id>.icloud-account`, account = the id) together with the archived `NSFileManager.ubiquityIdentityToken`; the current token is matched against the stored ones with `isEqual:`, as Apple intends, never by its bytes. So the id survives relaunches, reinstalls (as far as the Keychain does) and changes in how the token archives. Also `""` while the Keychain cannot be used (the device not unlocked since it started), rather than an id that could not be found again. Never shown or sent anywhere; it need not match across devices.  
 `get_plugin_version()` - The fork's git revision this plugin was built from; `+` marks a build from a dirty tree.  
 
 The key-value store needs the `com.apple.developer.ubiquity-kvstore-identifier` entitlement.

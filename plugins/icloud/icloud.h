@@ -56,9 +56,10 @@ public:
 	Variant get_all_key_values();
 
 	// Crystal Tempest fork: an opaque, stable id for the iCloud account signed
-	// in on this device - the SHA-256 (hex) of the archived
-	// NSFileManager.ubiquityIdentityToken - or "" when there is none. Never
-	// shown or sent anywhere; it need not match across devices.
+	// in on this device, or "" when there is none (or the Keychain cannot be
+	// used yet). A random id per account, kept in the Keychain with the
+	// archived NSFileManager.ubiquityIdentityToken and matched with isEqual:.
+	// Never shown or sent anywhere; it need not match across devices.
 	String get_account_id();
 
 	// Crystal Tempest fork: the fork's git revision this plugin was built from.

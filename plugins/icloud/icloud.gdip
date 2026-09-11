@@ -8,7 +8,7 @@ deinitialization="unregister_icloud_types"
 [dependencies]
 linked=[]
 embedded=[]
-system=[]
+system=["Security.framework"]
 
 capabilities=[]
 

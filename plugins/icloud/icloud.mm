@@ -33,8 +33,8 @@
 // Crystal Tempest fork: the stock plugin imported the Godot app delegate here
 // without using it; on Godot 4.5+ that header warns for the iOS 12 target.
 
-#import <CommonCrypto/CommonDigest.h>
 #import <Foundation/Foundation.h>
+#import <Security/Security.h>
 
 // Stamped by SConstruct from the fork's git revision.
 #ifndef ICLOUD_PLUGIN_VERSION
@@ -43,6 +43,20 @@
 
 static id icloud_kvs_observer = nil;
 static id icloud_identity_observer = nil;
+
+// get_account_id(): the token the id was last resolved for, so the Keychain is
+// read only when the account changes. Main thread only.
+static id icloud_cached_token = nil;
+static NSString *icloud_cached_account_id = nil;
+static bool icloud_keychain_warned = false;
+
+static void icloud_warn_keychain(const char *p_what, OSStatus p_status) {
+	if (icloud_keychain_warned) {
+		return;
+	}
+	icloud_keychain_warned = true;
+	WARN_PRINT(String("iCloud: could not ") + p_what + " the account ids in the Keychain (OSStatus " + itos((int)p_status) + "); reporting no account.");
+}
 
 #if VERSION_MAJOR == 4
 typedef PackedByteArray GodotByteArray;
@@ -72,19 +86,88 @@ void ICloud::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("pop_pending_event"), &ICloud::pop_pending_event);
 };
 
+// Apple's intended check for "the same iCloud account": keep the archived
+// ubiquityIdentityToken and compare tokens with isEqual:, never their bytes.
+// Each account seen on this device gets a random id, stored in the Keychain
+// beside its archived token (service "<bundle id>.icloud-account", account =
+// the id). So the id survives relaunches, reinstalls (as far as the Keychain
+// does) and any change in how a token archives; only a token equal to none of
+// the stored ones - a different account - gets a new id.
+//
+// When the Keychain cannot be read or written (the device not unlocked since it
+// started) this answers "" rather than mint an id it could not find again: a
+// second id for the same account would split its gold. The next call retries.
 String ICloud::get_account_id() {
 	id<NSObject, NSCopying, NSCoding> token = [[NSFileManager defaultManager] ubiquityIdentityToken];
 	if (token == nil) {
 		return String();
 	}
+	if (icloud_cached_token != nil && [icloud_cached_token isEqual:token]) {
+		return String::utf8(icloud_cached_account_id.UTF8String);
+	}
+
+	NSString *bundle_id = [[NSBundle mainBundle] bundleIdentifier] ?: @"godot";
+	NSString *service = [bundle_id stringByAppendingString:@".icloud-account"];
+
+	NSDictionary *query = @{
+		(__bridge id)kSecClass : (__bridge id)kSecClassGenericPassword,
+		(__bridge id)kSecAttrService : service,
+		(__bridge id)kSecMatchLimit : (__bridge id)kSecMatchLimitAll,
+		(__bridge id)kSecReturnAttributes : @YES,
+		(__bridge id)kSecReturnData : @YES,
+	};
+	CFTypeRef result = NULL;
+	OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+	if (status != errSecSuccess && status != errSecItemNotFound) {
+		icloud_warn_keychain("read", status);
+		return String();
+	}
+
+	NSArray *items = (status == errSecSuccess && result != NULL) ? (__bridge_transfer NSArray *)result : @[];
+	for (NSDictionary *item in items) {
+		NSData *stored_archive = item[(__bridge id)kSecValueData];
+		NSString *stored_id = item[(__bridge id)kSecAttrAccount];
+		if (stored_archive == nil || stored_id == nil) {
+			continue;
+		}
+		NSError *error = nil;
+		NSKeyedUnarchiver *unarchiver = [[NSKeyedUnarchiver alloc] initForReadingFromData:stored_archive error:&error];
+		if (unarchiver == nil) {
+			continue;
+		}
+		unarchiver.requiresSecureCoding = NO;
+		id stored_token = [unarchiver decodeObjectForKey:NSKeyedArchiveRootObjectKey];
+		[unarchiver finishDecoding];
+		if (stored_token != nil && [stored_token isEqual:token]) {
+			icloud_cached_token = token;
+			icloud_cached_account_id = stored_id;
+			return String::utf8(stored_id.UTF8String);
+		}
+	}
+
+	// An account this device has not seen: remember it under a new id.
 	NSError *error = nil;
 	NSData *archived = [NSKeyedArchiver archivedDataWithRootObject:token requiringSecureCoding:NO error:&error];
 	if (archived == nil) {
+		icloud_warn_keychain("archive the token for", errSecParam);
 		return String();
 	}
-	unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-	CC_SHA256(archived.bytes, (CC_LONG)archived.length, digest);
-	return String::hex_encode_buffer(digest, CC_SHA256_DIGEST_LENGTH);
+	NSString *account_id = [[[NSUUID UUID] UUIDString] lowercaseString];
+	NSDictionary *item = @{
+		(__bridge id)kSecClass : (__bridge id)kSecClassGenericPassword,
+		(__bridge id)kSecAttrService : service,
+		(__bridge id)kSecAttrAccount : account_id,
+		(__bridge id)kSecValueData : archived,
+		(__bridge id)kSecAttrAccessible : (__bridge id)kSecAttrAccessibleAfterFirstUnlock,
+	};
+	status = SecItemAdd((__bridge CFDictionaryRef)item, NULL);
+	if (status != errSecSuccess) {
+		icloud_warn_keychain("store", status);
+		return String();
+	}
+	icloud_cached_token = token;
+	icloud_cached_account_id = account_id;
+	return String::utf8(account_id.UTF8String);
 }
 
 String ICloud::get_plugin_version() {
